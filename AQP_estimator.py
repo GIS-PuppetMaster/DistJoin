@@ -7,20 +7,15 @@ from dataclasses import dataclass
 
 import common
 from datasets import JoinOrderBenchmark
-from model.TesseractTransformer import TesseractTransformer
-from model.made import MADE
 
 from common import Table
-from model import made, transformer
-from model.orderless_made import OrderlessMADE
+from model import made
 import pandas as pd
 from typing import *
 from enum import Enum
 from torch.cuda.amp import autocast
-from train import DataParallelPassthrough
-from utils import train_utils, util
-import utils
-import utils.util
+from utils import  util
+
 
 real_table = []
 OPS_array = np.array(['=', '>', '<', '>=', '<='])
@@ -729,7 +724,7 @@ class DirectEstimator(CardEst):
                             raise Exception(f'not supported predicate: {predicate.raw_attr}{true_predicate}{true_val}')
             else:
                 pred_key.append(predicate)
-        filtered_df = df[mask]
+        filtered_df = df[mask] if len(predicates)>1 else df
         if len(pred_key) == 0:
             freq = torch.as_tensor([len(filtered_df)], device=util.get_device())
         elif len(pred_key) == 1:
