@@ -1,0 +1,98 @@
+seed: 42
+excludes: []
+factorize: true
+use_cols: ~
+datasets: [ 'imdb' ]
+num_gpu: 1
+factorize_blacklist: []
+exclude_gpus: []
+data_dir: './datasets/job/'
+tag: ''
+train:
+  use_pregen_data: false
+  use_cols: 'general'
+  multiprocess_pool_size: 1
+  epochs: 20
+
+  num_orders_to_forward: 1
+  warmups: 0.1
+  constant_lr: ~
+  lr_scheduler: # 'OneCycleLR-0.1'
+
+  use_adaptive_scheduler: false
+  patient: 2
+  min_lr: 0.000001
+  slow_improvement_threshold: 0.1
+  no_improvement_threshold: 0.01
+  decay_patient: ~
+  decay_rate: ~
+  anneal_patient: ~ # how many times after lr decay that entropy still doesn't decrease enough
+  # anneal_rate: 10 # lr * anneal_rate ^ (anneal_patient + 1), increase based on the lr before decay
+  cool_down: 0
+  bs: 16384
+  sample_bs: 4096
+  max_steps: 256
+  expand_factor: 1
+
+  special_orders: 1
+  natural_ordering: true
+  order: ~
+  order_seed: ~
+  inv_order: false
+
+
+  num_dmol: 0
+  scale_input: false
+  dmol_cols: []
+
+  input_encoding: 'embed'
+  output_encoding: 'embed'
+  embed_size: 64
+  input_no_emb_if_leq: true
+  embs_tied: false
+  word_size_bits: 12
+  use_adaptive_temp: true
+  use_ANPM: true
+  use_sos: true
+  use_mix_act: true
+
+  model_type: 'MADE' #'TesseractTransformer'
+
+  layers: 4
+  direct_io: true
+  residual: true
+  fc_hiddens: 256
+  use_ensemble: false # false # cause training unstable?
+
+  transformer:
+    num_blocks: 32
+    d_ff: 512
+    d_model: 256
+    num_heads: 16
+    ln_output: false
+
+  dropout: true
+  learnable_unk: true
+  per_row_dropout: false
+  grouped_dropout: false
+  fixed_dropout_ratio: false
+  resmade_drop_prob: 0.0
+
+  optimizer: 'adam'
+  use_data_parallel: false
+
+  label_smoothing: 0.0
+  use_class_weight: false
+test:
+  use_ensemble: false
+  run_bn: false
+  how: '='
+  queries_csv: './queries/job-light-ranges.csv'
+  glob: '{}-seed42-19.pt'
+  glob_epoch: '{}-seed42-{}.pt'
+  load_from_cache: false
+  use_cache: true
+  real: false
+  randomize: false
+  faster_version: false
+  epochs: 20
