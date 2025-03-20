@@ -15,7 +15,6 @@ import torch
 import common
 import datasets
 from datasets import JoinOrderBenchmark
-import time
 
 seed = 42
 np.random.seed(seed)
@@ -118,16 +117,15 @@ if __name__ == '__main__':
                 workload_num = len(loaded_queries)
                 for query_id, (join_tables, join_keys, preds, true_card) in tqdm(enumerate(loaded_queries)):
                     print(f'query_id: {query_id}\n join_tables: {join_tables}, join_keys:{join_keys}, preds:{preds}')
-                    predicates = []
-                    used = []
-                    for table_name in join_tables:
-                        predicates.append(AQP_estimator.DirectEstimator.GetKeyPredicate(table_name, AQP_estimator.DirectEstimator.GetJoinKeyColumn(tables_dict[table_name])))
-                    # get true card
-                    st = time.time()
-                    condition_prob = estimator.get_prob_of_predicate_tree(predicates, join_tables, tables_dict, how, real=True)
-                    print(f'cost: {time.time()-st}')
-                    true_card = int(condition_prob)
-                    true_cards[how][frozenset(join_tables)]=true_card
+                    if how not in true_cards or frozenset(join_tables) not in true_cards[how]:
+                        predicates = []
+                        used = []
+                        for table_name in join_tables:
+                            predicates.append(AQP_estimator.DirectEstimator.GetKeyPredicate(table_name, AQP_estimator.DirectEstimator.GetJoinKeyColumn(tables_dict[table_name])))
+                        # get true card
+                        condition_prob = estimator.get_prob_of_predicate_tree(predicates, join_tables, tables_dict, how, real=True)
+                        true_card = int(condition_prob)
+                        true_cards[how][frozenset(join_tables)]=true_card
     
         with open(f'basecard{tag}.pkl', 'wb') as f:
             pkl.dump(true_cards, f)
