@@ -19,7 +19,7 @@ shorten_table_name = {
     'movie_companies': 'mc',
     'movie_info_idx': 'mi_idx',
 }
-tags = ['_previous']
+tags = ['', '_previous']
 
 # 数据库连接参数
 db_config = dict(
@@ -39,10 +39,12 @@ def auto_quote(value):
         # 否则加引号处理字符串
         return f"'{value}'"
 
-conn = psycopg2.connect(**db_config)
-cursor = conn.cursor()
-query_template = "EXPLAIN (ANALYZE OFF) SELECT * FROM {} WHERE {} AND {};"
+
 for tag in tags:
+    db_config['database'] = 'imdb'+tag+'_raw'
+    conn = psycopg2.connect(**db_config)
+    cursor = conn.cursor()
+    query_template = "EXPLAIN (ANALYZE OFF) SELECT * FROM {} WHERE {} AND {};"
     for workload in test_workloads:
         for how in hows:
             with open(f'./queries/{workload}_{how}{tag}.pkl', 'rb') as f:
@@ -85,9 +87,6 @@ for tag in tags:
             os.makedirs('./result/PG/', exist_ok=True)
             df_res = {'true_card': true_cards, 'est_card': card_result, 'q_error': q_errors, 'rel_error': rel_errors, 'cost': costs}
             df_res = pd.DataFrame(df_res).to_csv(f'./result/PG/{workload}_{how}{tag}.csv', index=False)
-
-
-
-# 关闭连接
-cursor.close()
-conn.close()
+    # 关闭连接
+    cursor.close()
+    conn.close()

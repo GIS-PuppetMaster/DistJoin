@@ -93,7 +93,7 @@ for table_name, key in JoinOrderBenchmark.GetJobLightJoinKeys().items():
 all_true_cards = {}
 all_base_cards = {}
 for workload in workloads:
-    queries_job_format = utils.util.JobToQuery(f'./queries/{workload}.csv')
+    queries_job_format, _ = utils.util.JobToQuery(f'./queries/{workload}.csv')
     loaded_queries = utils.util.UnpackQueries(tables_dict, queries_job_format)
     preds = []
     for query in loaded_queries:
@@ -112,7 +112,7 @@ for workload in workloads:
             true_card_list = np.array(pkl.load(f))
         base_cards = []
         for query_id, (join_tables, join_keys, preds, true_card) in enumerate(loaded_queries):
-            base_cards.append(JoinOrderBenchmark.TRUE_JOIN_BASE_CARDINALITY[how][frozenset(join_tables)])
+            base_cards.append(JoinOrderBenchmark.TRUE_JOIN_BASE_CARDINALITY[how][str(join_tables)])
         base_cards = np.array(base_cards)
         print(f'workload: {workload_tag}, how: {how}, min_card:{np.format_float_scientific(true_card_list.min())}, max_card:{np.format_float_scientific(true_card_list.max())}, min_base_card:{np.format_float_scientific(base_cards.min())}, max_base_card:{np.format_float_scientific(base_cards.max())}')
         all_true_cards[workload_tag+how] = true_card_list

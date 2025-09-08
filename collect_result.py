@@ -8,12 +8,16 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 import AQP_estimator
+from utils.util import get_q_error
 
 train_tags = {'DistJoin': ['', '_previous'],
         'PG':['', '_previous'],
         'NeuroCard':['', '_previous'],
         'FactorJoin':['', '_previous'],
-        'MSCN':['', '_previous']}
+        'MSCN':['', '_previous'],
+        'ALECE':['', '_previous'],
+        'UAE': ['', '_previous'],
+        }
 eval_tags = {
     '1740979448.161846': [''],
     # '1740289713.764569': [''],
@@ -22,10 +26,13 @@ eval_tags = {
     'PG': ['', '_previous'],
     'result': ['', '_previous'],
     'FactorJoin': ['', '_previous'],
-    'MSCN':['', '_previous']
+    'MSCN':['', '_previous'],
+    'ALECE': ['', '_previous'],
+    'UAE': ['', '_previous'],
+
 }
 hows = AQP_estimator.OPS_array.tolist()
-methods = ['DistJoin','PG', 'NeuroCard', 'FactorJoin', 'MSCN'] # must load DistJoin first to get selectivity column
+methods = ['DistJoin', 'PG', 'NeuroCard', 'FactorJoin', 'MSCN', 'ALECE', 'UAE'] #x must load DistJoin first to get selectivity column
 DistJoin_tag_to_exp_marks = {
     'job-light': '1740979448.161846',
     'job-light-ranges': '1740979448.161846',
@@ -46,6 +53,8 @@ PG_result_path = './result/PG'
 NeuroCard_path = './result/NeuroCard'
 FactorJoin_path = './result/FactorJoin'
 MSCN_path = './result/MSCN'
+ALECE_path = './result/ALECE'
+UAE_path = './result/UAE'
 result_dict = {'method': [], 'train_tag':[], 'eval_tag':[], 'how':[], 'workload':[], 'q_error':[], 'rel_error':[], 'cost':[], 'selectivity':[], 'est_card':[], 'true_card':[]}
 
 def get_exp_mark(method):
@@ -53,7 +62,7 @@ def get_exp_mark(method):
         exp_mark = DistJoin_tag_to_exp_marks[workload + train_tag]
     elif method == 'PG':
         exp_mark = 'PG'
-    elif method == 'NeuroCard':
+    elif method in ['NeuroCard', 'UAE']:
         exp_mark = 'result'
     else:
         exp_mark = method
@@ -69,8 +78,10 @@ for method in methods:
                 if method == 'PG' and train_tag!=eval_tag:
                     continue
                 for how in hows:
+                    distjoin_mark = get_exp_mark('DistJoin')
+                    distjoin_df = pd.read_csv(os.path.join(DistJoin_path, distjoin_mark, f'{distjoin_mark}_{workload}_{how}{eval_tag}.csv'))
                     if method == 'DistJoin':
-                        df = pd.read_csv(os.path.join(DistJoin_path, exp_mark, f'{exp_mark}_{workload}_{how}{eval_tag}.csv'))
+                        df = distjoin_df
                     elif method == 'PG':
                         df = pd.read_csv(os.path.join(PG_result_path, f'{workload}_{how}{eval_tag}.csv'))
                     elif method == 'NeuroCard':
@@ -83,6 +94,20 @@ for method in methods:
                         df = pd.read_csv(os.path.join(FactorJoin_path, f'{workload_map_for_FactorJoin[workload]}{train_tag}{eval_tag}.csv'))
                     elif method == 'MSCN':
                         df = pd.read_csv(os.path.join(MSCN_path, f'{workload}-{workload_to_num[workload]}queries-seed42-{how}{train_tag}{eval_tag}.csv'))
+                    elif method == 'ALECE':
+                        df = pd.read_csv(os.path.join(ALECE_path, f'{workload}-{how}{eval_tag}.csv'))
+                    elif method == 'UAE':
+                        if how != '=':
+                            continue
+                        df = pd.read_csv(os.path.join(UAE_path, f'{exp_mark}_[\'{workload}-mscn-workload{train_tag.replace('_', '-')}{eval_tag.replace('_', '-')}\'].csv'))
+                    else:
+                        raise Exception(f'not supported method:{method}')
+                    if method in ['FactorJoin', 'ALECE']: # fix the outdated true_card and errors
+                        df['true_card'] = distjoin_df['true_card'] if len(df) == len(distjoin_df) else distjoin_df['true_card'][(distjoin_df['true_card']!=0) & (distjoin_df['true_card']!='0')]
+                        est_cards = df['est_card']
+                        true_cards = np.array([int(c) for c in list(df['true_card'])],dtype=object)
+                        df['q_error'] = np.array([get_q_error(int(est_card), int(true_card)) for est_card, true_card in zip(est_cards, true_cards)])
+                        df['rel_error'] = np.array([np.abs(est_card - true_card) / true_card if true_card!=0 else np.nan for est_card, true_card in zip(est_cards, true_cards)])
                     df = df[(df['true_card'] != 0) & (df['true_card'] != '0')]
                     print(f'{method} {workload}, {train_tag}, {eval_tag}, {how}')
                     if 'selectivity' in df.columns:
@@ -105,7 +130,7 @@ for method in methods:
                     result_dict['eval_tag'].extend([eval_tag for _ in range(df.shape[0])])
                     result_dict['how'].extend([how for _ in range(df.shape[0])])
                     result_dict['est_card'].extend(df['est_card'])
-                    result_dict['true_card'].extend(df['true_card'])
+                    result_dict['true_card'].extend([int(v) for v in df['true_card'].values])
 result_df = pd.DataFrame(result_dict)
 result_df.to_csv('result.csv', index=False, na_rep="")
 result_summary = {'method': [], 'train_tag':[], 'eval_tag':[], 'how':[], 'workload':[], 'q_error_mean':[],'q_error_50th':[],'q_error_95th':[],'q_error_99th':[],'q_error_100th':[], 'rel_error_mean':[], 'cost_mean':[]}
@@ -121,7 +146,7 @@ for method in methods:
                 if method == 'PG' and train_tag!=eval_tag:
                     continue
                 for how in hows:
-                    if method in ['NeuroCard', 'FactorJoin'] and how != '=':
+                    if method in ['NeuroCard', 'FactorJoin', 'UAE'] and how != '=':
                         continue
                     filted = result_df[(result_df['method'] == method) & (result_df['train_tag'] == train_tag) & (result_df['eval_tag'] == eval_tag) & (result_df['how'] == how) & (result_df['workload'] == workload)]
                     result_summary['method'].append(method)

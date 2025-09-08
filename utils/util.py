@@ -117,6 +117,14 @@ class GPUMemoryMonitor:
 #     data = indepent_index_data(data, idx)
 #     return data, preds
 
+def get_q_error(est_card, card):
+    if card == 0 and est_card != 0:
+        return 1.0  # illegal query, will be dropped later, won't affect the result
+    if card != 0 and est_card == 0:
+        return card
+    if card == 0 and est_card == 0:
+        return 1.0
+    return max(est_card / card, card / est_card)
 
 def MakeOrdering(table, config, raw_config):
     fixed_ordering = None
@@ -470,28 +478,41 @@ def SampleTupleThenRandom(all_cols,
     key_idx = next((k for k, col in enumerate(all_cols) if col.name in ['id', 'movie_id']), -1)
 
     # 2. 过滤掉 key_idx，生成候选列的索引
-    remaining_cols_idx = [k for k in range(len(all_cols)) if k != key_idx]
+    remaining_cols_idx = np.array([k for k in range(len(all_cols)) if k != key_idx])
 
-    s = None
-    escape = 0
-    while s is None or len(remaining_cols_idx)-np.sum(pd.isnull(s))<num_filters:
-        s = table.data.iloc[rng.randint(0, table.cardinality)]
-        escape+=1
-        if escape>10:
-            num_filters-=1
-            escape = 0
-    vals = s.values
+    selected_cols = rng.binomial(1, 0.5, size=len(remaining_cols_idx)).astype(bool)
+    idxs = remaining_cols_idx[selected_cols]
+    # filter out columns with no distinct values except nan value
+    idxs = list(filter(lambda x: not ((all_cols[x].has_none and len(all_cols[x].all_distinct_values) <= 1) or (len(all_cols[x].all_distinct_values)==0)), idxs))
+    vals = []
+    for idx in idxs:
+        col = all_cols[idx]
+        dvs = col.all_distinct_values
+        start_idx = 1 if col.has_none else 0
+        v = dvs[rng.randint(start_idx, len(dvs))]
+        vals.append(np.array(v).astype(table.data.iloc[idx].dtype).item())
+    cols = np.take(all_cols, idxs)
+    # s = None
+    # escape = 0
+    # while s is None or len(remaining_cols_idx)-np.sum(pd.isnull(s))<num_filters:
+    #     s = table.data.iloc[rng.randint(0, table.cardinality)]
+    #     escape+=1
+    #     if escape>10:
+    #         num_filters-=1
+    #         escape = 0
+    # vals = s.values
 
-    if 'dmv' in dataset:
-        # Giant hack for DMV.
-        vals[6] = vals[6].to_datetime64()
+    # if 'dmv' in dataset:
+    #     # Giant hack for DMV.
+    #     vals[6] = vals[6].to_datetime64()
 
-    idxs = None
-    while idxs is None or pd.isnull(vals[idxs]).any():
-        idxs = rng.choice(remaining_cols_idx, replace=False, size=num_filters)
-        cols = np.take(all_cols, idxs)
+    # idxs = None
+    # while idxs is None or pd.isnull(vals[idxs]).any():
+    #     idxs = rng.choice(remaining_cols_idx, replace=False, size=num_filters)
+    #     cols = np.take(all_cols, idxs)
 
-    vals = vals[idxs]
+    # vals = vals[idxs]
+    # num_filters = len(vals)
     num_filters = len(vals)
     # If dom size >= 10, okay to place a range filter.
     # Otherwise, low domain size columns should be queried with equality.
@@ -528,7 +549,7 @@ def GenerateQuery(all_cols, rng, table, dataset, return_col_idx=False, num_filte
                 num_filters = rng.randint(5, 14)
         else:
             # num_filters = rng.randint(1, min(max(2, int(len(table.columns) * 0.3)), 4)) if how=='=' else rng.randint(max(1, int(len(table.columns) * 0.3)), len(table.columns))
-            num_filters = rng.randint(max(0, int(len(table.columns) * 0.5)), len(table.columns))
+            num_filters = rng.randint(0, len(table.columns))
     if num_filters==0:
         return [[],[],[]]
     cols, ops, vals = SampleTupleThenRandom(all_cols,
@@ -671,8 +692,23 @@ def _get_table_dict(tables):
 def _get_join_dict(joins, table_dict, use_alias_keys):
     from ordered_set import OrderedSet
     join_dict = defaultdict(OrderedSet)
+    how = None
     for j in joins:
-        ops = j.split('=')
+        if '>=' in j:
+            ops = j.split('>=')
+            how = '>='
+        elif '<=' in j:
+            ops = j.split('<=')
+            how = '<='
+        elif '>' in j:
+            ops = j.split('>')
+            how = '>'
+        elif '<' in j:
+            ops = j.split('<')
+            how = '<'
+        else:
+            ops = j.split('=')
+            how = '='
         op1 = ops[0].split('.')
         op2 = ops[1].split('.')
         t1, k1 = op1[0], op1[1]
@@ -682,7 +718,7 @@ def _get_join_dict(joins, table_dict, use_alias_keys):
             t2 = table_dict[t2]
         join_dict[t1].add(k1)
         join_dict[t2].add(k2)
-    return join_dict
+    return join_dict, how
 
 
 def _try_parse_literal(s):
@@ -727,16 +763,18 @@ def JobToQuery(csv_file, use_alias_keys=True):
     queries = []
     with open(csv_file) as f:
         data_raw = list(list(rec) for rec in csv.reader(f, delimiter='#'))
+        hows = []
         for row in data_raw:
             reader = csv.reader(row)  # comma-separated
             table_dict = _get_table_dict(next(reader))
-            join_dict = _get_join_dict(next(reader), table_dict, use_alias_keys)
+            join_dict, how = _get_join_dict(next(reader), table_dict, use_alias_keys)
+            hows.append(how)
             predicate_dict = _get_predicate_dict(next(reader), table_dict)
             true_cardinality = int(next(reader)[0])
             queries.append((list(table_dict.values()), join_dict,
                             predicate_dict, true_cardinality))
 
-        return queries
+        return queries, hows
 
 
 def UnpackQueries(table_dict, queries):

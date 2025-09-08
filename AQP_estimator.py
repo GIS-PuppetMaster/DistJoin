@@ -8,14 +8,19 @@ from dataclasses import dataclass
 import common
 from datasets import JoinOrderBenchmark
 
+from model.made import MADE
+
 from common import Table
-from model import made
+from model import made, transformer
+
 import pandas as pd
 from typing import *
 from enum import Enum
 from torch.cuda.amp import autocast
-from utils import  util
-
+from train import DataParallelPassthrough
+from utils import train_utils, util
+import utils
+import utils.util
 
 real_table = []
 OPS_array = np.array(['=', '>', '<', '>=', '<='])
@@ -486,6 +491,10 @@ class DirectEstimator(CardEst):
         self.inps = {name: torch.full((1, 2, len(table.columns)), -1, device=self.device) for name, table in self.fact_tables.items()}
         self.preds = {name: torch.zeros((1, 2, 5 * len(table.columns)), device=self.device) for name, table in self.fact_tables.items()}
         self._warm_up_model() #预热以防第一次预测开销过高导致速度测量不准确
+        if self.models is not None:
+            for m_name, m in self.models.items():
+                ANPM_param_num = np.array([np.prod(t.shape) for t in [v for k, v in m.named_parameters() if 'modulation_offset' in k]]).sum()
+                print(f'{m_name} ANPM params num: {ANPM_param_num}')
 
     def __str__(self):
         return 'Duet_Join'
@@ -515,9 +524,15 @@ class DirectEstimator(CardEst):
         with autocast():
             prob = self.get_prob_of_predicates_from_different_table(predicate_list, join_tables, tables_dict, how,
                                                                     real=real)
-            # if not self.config['test']['faster_version']:
-            #     prob = torch.clip(prob, 0.0, 1.0)
-            return prob.sum().cpu().item()
+            if self.config['test']['faster_version']:
+                if isinstance(prob, torch.Tensor):
+                    return sum(prob.cpu().numpy().tolist())
+                elif isinstance(prob, np.ndarray):
+                    return sum(prob.tolist())
+                else:
+                    return prob
+            else:
+                return prob.sum().cpu().item()
 
 
 
@@ -540,6 +555,9 @@ class DirectEstimator(CardEst):
             dist = torch.zeros((len(self.global_distinct_values)), device=local_distribution.device,
                                dtype=local_distribution.dtype)
             dist[mask] = local_distribution + 1e-10 if not real and how=='=' else local_distribution
+            if self.config['test']['faster_version']:
+                dist = dist.cpu().numpy().astype(object)
+                # dist = np.array([gmpy2.mpz(d) for d in dist])
             return dist
         else:
             raise Exception(
@@ -559,8 +577,8 @@ class DirectEstimator(CardEst):
 
         # 首先将所有涉及到的表分为两份
         join_tables = list(join_tables)
-        tables_left = join_tables[:len(join_tables) // 2]
-        tables_right = join_tables[len(join_tables) // 2:]
+        tables_left = join_tables[:-1]
+        tables_right = join_tables[-1:]
         # 分离来自左右两组表的谓词
         predicates_from_left = list(filter(lambda x: x.table in tables_left, predicates))
         predicates_from_right = list(filter(lambda x: x.table in tables_right, predicates))
@@ -581,11 +599,6 @@ class DirectEstimator(CardEst):
                     prob_left = self.get_freq_of_predicates(tuple(predicates_from_left))
                 else:
                     prob_left = self.get_prob_of_predicates(predicates_from_left, keepdim=self.get_keep_dim(predicates_from_left))
-                # prob_pred = self.get_freq_of_predicates(predicates_from_left, tables_dict, is_single_table=True)
-                # print(f'table: {tables_left[0]}, true sel: {prob_pred.sum()}, predicted sel: {prob_left.sum()}')
-                # prob_left = self.get_prob_of_predicates(predicates_from_left, distinct_table,
-                #                                             keepdim=self.get_keep_dim(predicates_from_left))
-                # prob_left = prob_pred * prob_left
                 prob_left = self.fill_complete_values(prob_left, left_distinct_values, tables_left[0], how, real)
             elif len(tables_left) > 1:
                 prob_left = self.get_prob_of_predicates_from_different_table(predicates_from_left, tables_left,
@@ -593,14 +606,6 @@ class DirectEstimator(CardEst):
                                                                              how, reduce=False, real=real)
             else:
                 prob_left = 1
-
-            if len(tables_right) > 0 and len(tables_left)>0: # 避免单表基数估计时的错误
-                if how == '<=':
-                    prob_left = torch.cumsum(prob_left, dim=-1)
-                elif how == '<':
-                    prob_left = torch.roll(prob_left, shifts=1, dims=-1)
-                    prob_left[:1] = 0
-                    prob_left = torch.cumsum(prob_left, dim=-1)
 
             if len(tables_right) == 1:
                 # 调整顺序始终把key列放最后
@@ -611,11 +616,6 @@ class DirectEstimator(CardEst):
                     prob_right = self.get_freq_of_predicates(tuple(predicates_from_right))
                 else:
                     prob_right = self.get_prob_of_predicates(predicates_from_right, keepdim=self.get_keep_dim(predicates_from_right))
-                # prob_pred = self.get_freq_of_predicates(predicates_from_right, tables_dict, is_single_table=True)
-                # print(f'table: {tables_right[0]}, true sel: {prob_pred.sum()}, predicted sel: {prob_right.sum()}')
-                # prob_right = self.get_prob_of_predicates(predicates_from_right, distinct_table,
-                #                                              keepdim=self.get_keep_dim(predicates_from_right))
-                # prob_right = prob_pred * prob_right
                 prob_right = self.fill_complete_values(prob_right, right_distinct_values, tables_right[0], how, real)
             elif len(tables_right)>1:
                 prob_right = self.get_prob_of_predicates_from_different_table(predicates_from_right, tables_right,
@@ -625,12 +625,32 @@ class DirectEstimator(CardEst):
                 prob_right = 1
 
             if len(tables_left) > 0 and len(tables_right)>0: # 避免单表基数估计时的错误
-                if how == '>=':
-                    prob_right = torch.cumsum(prob_right, dim=-1)
-                elif how == '>':
-                    prob_right = torch.roll(prob_right, shifts=1, dims=-1)
-                    prob_right[:1] = 0
-                    prob_right = torch.cumsum(prob_right, dim=-1)
+                if isinstance(prob_left, torch.Tensor):
+                    if how == '>=':
+                        prob_left = prob_left + torch.sum(prob_left, dim=-1, keepdim=True) - torch.cumsum(prob_left, dim=-1)
+                    elif how == '>':
+                        prob_left = torch.roll(prob_left, shifts=-1, dims=-1)  # 反向移位
+                        prob_left[-1:] = 0
+                        prob_left = prob_left + torch.sum(prob_left, dim=-1, keepdim=True) - torch.cumsum(prob_left, dim=-1)
+                    elif how == '<=':
+                        prob_left = torch.cumsum(prob_left, dim=-1)
+                    elif how == '<':
+                        prob_left = torch.roll(prob_left, shifts=1, dims=-1)
+                        prob_left[:1] = 0
+                        prob_left = torch.cumsum(prob_left, dim=-1)
+                elif isinstance(prob_left, np.ndarray):
+                    if how == '>=':
+                        prob_left = prob_left + np.sum(prob_left, axis=-1, keepdims=True) - np.cumsum(prob_left, axis=-1)
+                    elif how == '>':
+                        prob_left = np.roll(prob_left, shift=-1, axis=-1)  # 反向移位
+                        prob_left[-1:] = 0
+                        prob_left = prob_left + np.sum(prob_left, axis=-1, keepdims=True) - np.cumsum(prob_left, axis=-1)
+                    elif how == '<=':
+                        prob_left = np.cumsum(prob_left, axis=-1)
+                    elif how == '<':
+                        prob_left = np.roll(prob_left, shift=1, axis=-1)
+                        prob_left[:1] = 0
+                        prob_left = np.cumsum(prob_left, axis=-1)
 
         if not self.config['test']['faster_version']:
             if len(tables_left) == 1:
@@ -645,14 +665,6 @@ class DirectEstimator(CardEst):
                                                                                  how, real=real, key_only=True)
             else:
                 prob_key_left = 1
-
-            if len(tables_right) > 0 and len(tables_left)>0:
-                if how == '<=':
-                    prob_key_left = torch.cumsum(prob_key_left, dim=-1)
-                elif how == '<':
-                    prob_key_left = torch.roll(prob_key_left, shifts=1, dims=-1)
-                    prob_key_left[:1] = 0
-                    prob_key_left = torch.cumsum(prob_key_left, dim=-1)
 
             if len(tables_right) == 1:
                 if real or tables_right[0] in real_table:
@@ -669,12 +681,32 @@ class DirectEstimator(CardEst):
                 prob_key_right = 1
 
             if len(tables_left) > 0 and len(tables_right) > 0:
-                if how == '>=':
-                    prob_key_right = torch.cumsum(prob_key_right, dim=-1)
-                elif how == '>':
-                    prob_key_right = torch.roll(prob_key_right, shifts=1, dims=-1)
-                    prob_key_right[:1] = 0
-                    prob_key_right = torch.cumsum(prob_key_right, dim=-1)
+                if isinstance(prob_key_left, torch.Tensor):
+                    if how == '>=':
+                        prob_key_left = prob_key_left + torch.sum(prob_key_left, dim=-1, keepdim=True) - torch.cumsum(prob_key_left, dim=-1)
+                    elif how == '>':
+                        prob_key_left = torch.roll(prob_key_left, shifts=-1, dims=-1)  # 反向移位
+                        prob_key_left[-1:] = 0
+                        prob_key_left = prob_key_left + torch.sum(prob_key_left, dim=-1, keepdim=True) - torch.cumsum(prob_key_left, dim=-1)
+                    elif how == '<=':
+                        prob_key_left = torch.cumsum(prob_key_left, dim=-1)
+                    elif how == '<':
+                        prob_key_left = torch.roll(prob_key_left, shifts=1, dims=-1)
+                        prob_key_left[:1] = 0
+                        prob_key_left = torch.cumsum(prob_key_left, dim=-1)
+                elif isinstance(prob_key_left, np.ndarray):
+                    if how == '>=':
+                        prob_key_left = prob_key_left + np.sum(prob_key_left, axis=-1, keepdims=True) - np.cumsum(prob_key_left, axis=-1)
+                    elif how == '>':
+                        prob_key_left = np.roll(prob_key_left, shift=-1, axis=-1)  # 反向移位
+                        prob_key_left[-1:] = 0
+                        prob_key_left = prob_key_left + np.sum(prob_key_left, axis=-1, keepdims=True) - np.cumsum(prob_key_left, axis=-1)
+                    elif how == '<=':
+                        prob_key_left = np.cumsum(prob_key_left, axis=-1)
+                    elif how == '<':
+                        prob_key_left = np.roll(prob_key_left, shift=1, axis=-1)
+                        prob_key_left[:1] = 0
+                        prob_key_left = np.cumsum(prob_key_left, axis=-1)
 
         if not key_only:
             # 计算两个合取式中包含两个表的公式
@@ -682,11 +714,10 @@ class DirectEstimator(CardEst):
                 prob = prob_left * prob_right
             else:
                 prob = (prob_left * prob_right) / torch.sum(prob_key_left * prob_key_right)
-            # 对key的维度求和，前面带着key维度计算，等于并行地对key的每一个可能取值进行计算
-            # if reduce:
-            #     prob = prob.sum(dim=-1)
-            #     if len(prob.shape) == 0:
-            #         prob = prob.view(1, )
+            # assert (prob >= 0).all() , f'prob error: {prob}'
+            # assert not torch.isnan(prob).all() if isinstance(prob, torch.Tensor) else True, f'prob error: {prob}'
+            # assert not torch.isinf(prob).all() if isinstance(prob, torch.Tensor) else True, f'prob error: {prob}'
+            # assert prob.sum() >=0, f'prob error: {prob}'
             return prob
         else:
             assert not self.config['test']['faster_version']
@@ -724,7 +755,7 @@ class DirectEstimator(CardEst):
                             raise Exception(f'not supported predicate: {predicate.raw_attr}{true_predicate}{true_val}')
             else:
                 pred_key.append(predicate)
-        filtered_df = df[mask] if len(predicates)>1 else df
+        filtered_df = self.tables_dict[predicates[0].table].data[mask]
         if len(pred_key) == 0:
             freq = torch.as_tensor([len(filtered_df)], device=util.get_device())
         elif len(pred_key) == 1:
@@ -733,7 +764,7 @@ class DirectEstimator(CardEst):
 
             # 使用 torch.unique 获取频次
             unique, counts = torch.unique(key_values, return_counts=True)
-            counts = counts.to(torch.float)
+            counts = counts.to(torch.float64)
             if key_col.has_none:
                 isnan_mask = torch.isnan(unique)
                 # 处理 NaN 逻辑
@@ -743,7 +774,7 @@ class DirectEstimator(CardEst):
 
             # 构建最终频次数组
             all_values = key_col.all_distinct_values_gpu
-            freq = torch.zeros(len(all_values), device=util.get_device())
+            freq = torch.zeros(len(all_values), device=util.get_device(), dtype=torch.float64)
             isin_mask = torch.isin(all_values, unique)
             freq[isin_mask] = counts
             if key_col.has_none:
@@ -753,7 +784,9 @@ class DirectEstimator(CardEst):
             raise Exception('more than one keep dim column, not support yet')
         if not self.config['test']['faster_version']:
             freq = freq / len(df)
+            return freq
         # self.cache_true[frozenset([frozenset(predicates)])] = freq.cpu()
+        freq = freq.to(torch.int64)
         return freq
 
 

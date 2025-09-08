@@ -152,7 +152,7 @@ def RunN(tables_dict,
     real = config['real']
 
     tc = []
-    queries_job_format = utils.util.JobToQuery(config['queries_csv'])
+    queries_job_format, _ = utils.util.JobToQuery(config['queries_csv'])
     queries_job_format_ = []
     for idx, (involved_tables, _, _, _) in enumerate(queries_job_format):
         if len(set(JoinOrderBenchmark.GetJobLightJoinKeys().keys()).intersection(set(involved_tables))) < len(
@@ -219,7 +219,7 @@ def RunN(tables_dict,
         st = time.time()
         condition_prob = estimator.get_prob_of_predicate_tree(predicates, join_tables, tables_dict, how, real=real)
         st = time.time() - st
-        base_card = datasets.JoinOrderBenchmark.TRUE_JOIN_BASE_CARDINALITY[how][frozenset(join_tables)]
+        base_card = datasets.JoinOrderBenchmark.TRUE_JOIN_BASE_CARDINALITY[how][str(join_tables)]
         pred_card = np.round(condition_prob) if config['faster_version'] else np.ceil(condition_prob*base_card)
         result_list.append(pred_card)
         print(f'prob:{condition_prob}, pred_card:{pred_card}, true_card:{true_card}, time cost: {st} s')

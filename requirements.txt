@@ -21,3 +21,4 @@ torch==2.6.0
 tqdm==4.66.5
 wandb==0.19.8
 yagmail==0.15.293
+pytorch_lamb

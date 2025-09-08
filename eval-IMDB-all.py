@@ -152,7 +152,7 @@ def RunN(tables_dict,
 
     real = config['real']
     tc = []
-    queries_job_format = utils.util.JobToQuery(config['queries_csv'])
+    queries_job_format, _ = utils.util.JobToQuery(config['queries_csv'])
     queries_job_format_ = []
     for idx, (involved_tables, _, _, _) in enumerate(queries_job_format):
         if len(set(JoinOrderBenchmark.GetJobLightJoinKeys().keys()).intersection(set(involved_tables))) < len(
@@ -216,7 +216,7 @@ def RunN(tables_dict,
         st = time.time()
         condition_prob = estimator.get_prob_of_predicate_tree(predicates, join_tables, tables_dict, how, real=real)
         st = time.time() - st
-        base_card = datasets.JoinOrderBenchmark.TRUE_JOIN_BASE_CARDINALITY[how][frozenset(join_tables)]
+        base_card = datasets.JoinOrderBenchmark.TRUE_JOIN_BASE_CARDINALITY[how][str(join_tables)]
         pred_card = np.round(condition_prob) if config['faster_version'] else np.ceil(condition_prob*base_card)
         result_list.append(pred_card)
         # print(f'prob:{condition_prob}, pred_card:{pred_card}, true_card:{true_card}, time cost: {st} s')
@@ -280,7 +280,7 @@ def RunN(tables_dict,
     q_low_df = pd.DataFrame(q_error_low)
     print(
         f'\tMean: {q_low_df.mean().to_numpy().item()}, 50th: {q_low_df.quantile(q=0.5).to_numpy().item()}, 95th: {q_low_df.quantile(q=0.95).to_numpy().item()}, 99th: {q_low_df.quantile(q=0.99).to_numpy().item()}, max:{q_low_df.max().to_numpy().item()}')
-    q_df = pd.DataFrame(q_error_list)
+    q_df = pd.DataFrame(q_error_list, columns=['q_error'])
     prec_summary = {
         'mean q_error': np.round(q_df.mean().item(),3).item(),
         '50th q_error': np.round(q_df.quantile(q=0.5).to_numpy().item(),3).item(),
@@ -298,8 +298,8 @@ def RunN(tables_dict,
     csv_res = pd.DataFrame({'true_card': true_card_list, 'est_card': result_list, 'selectivity': selectivity_list, 'q_error': q_error_list, 'rel_error': rel_error_list, 'cost': tc})
     os.makedirs(f'./result/DistJoin/{exp_mark}/', exist_ok=True)
     csv_res.to_csv(f'./result/DistJoin/{exp_mark}/{exp_mark}_{workload_tag}_{how}{tag}.csv')
-    summary['max_q_error'] = q_df.max().to_numpy().item()
-    return q_df.max().to_numpy().item()
+    summary['max_q_error'] = q_df['q_error'].max()
+    return q_df['q_error'].max()
 
 
 def SaveEstimators(path, estimators, return_df=False):

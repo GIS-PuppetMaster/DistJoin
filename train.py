@@ -21,7 +21,7 @@ from torch.utils import data
 import datasets
 from model import transformer, made
 from datasets import JoinOrderBenchmark
-from model.TesseractTransformer import TesseractTransformer
+#from model.TesseractTransformer import TesseractTransformer
 from model.transformer import Transformer
 from utils import train_utils, util
 import utils
